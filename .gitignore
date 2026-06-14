@@ -1,0 +1,35 @@
+# Data & model artifacts (large, regenerable)
+data/*
+!data/.gitkeep
+results/*
+!results/.gitkeep
+*.pkl
+*.parquet
+*.pt
+*.safetensors
+*.npy
+*.npz
+cache/
+checkpoints/
+
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+*.egg-info/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Secrets
+.env
+*.key
+
+# Private project context (local-only, not for the repo)
+CLAUDE.md
+mechanistic_kyc_pipeline_design.md

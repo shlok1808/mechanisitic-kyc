@@ -1,0 +1,22 @@
+# Core
+torch
+transformers
+accelerate
+huggingface_hub
+datasets
+
+# Numerics / stats
+numpy
+pandas
+scipy
+scikit-learn
+
+# Interpretability (hooks, patching, steering, SAEs)
+transformer-lens
+sae-lens
+einops
+
+# Config / utils / plots
+pyyaml
+tqdm
+matplotlib

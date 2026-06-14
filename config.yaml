@@ -1,0 +1,61 @@
+# Mechanistic KYC -- experiment config.
+# The threshold blocks below ARE the pre-registered success criteria.
+# Agree on them as a team BEFORE seeing results.
+
+seed: 42
+
+model:
+  primary: google/gemma-2-9b-it
+  replication: meta-llama/Llama-3.1-8B-Instruct
+  dtype: bfloat16            # never quantize for interp -- breaks activation stats
+
+sae:
+  gemma_scope: google/gemma-scope-9b-it-res
+  llama_scope: fnlp/Llama-Scope
+
+data:
+  n_profiles: 6000
+  split_by: profile_id       # prevents train/test leakage
+  tiers: [conservative, moderate, aggressive]
+
+extraction:
+  layers: [20, 25, 31]       # TBD -- sweep mid-to-late residual stream
+  positions: [profile_end, decision]   # probe both; localization is a finding
+
+advice_tasks: [portfolio_choice, equity_allocation, margin_approval]
+
+# ---- Pre-registered thresholds ----
+
+gate:                        # Phase 1 (go/no-go)
+  spearman_rho_min: 0.50
+  hedge_rate_max: 0.20
+
+probe:                       # RQ1
+  auroc_min: 0.85            # on implicit held-out
+  baseline_margin_min: 0.07  # over TF-IDF
+  ridge_r2_min: 0.50
+
+patching:                    # RQ2a
+  flip_rate_min: 0.70        # both directions
+
+steering:                    # RQ2b
+  dose_spearman_min: 0.80    # on >= 2/3 tasks, flat random-direction control
+  side_effects:
+    mmlu_delta_max: 2.0
+    ppl_ratio_max: 1.05
+    refusal_delta_max: 0.05
+
+self_vs_client:              # RQ2c (novelty)
+  cosine_distinct_max: 0.50   # distinct directions
+  cosine_conflation_min: 0.80 # OR this -> "conflation" finding
+
+pressure:                    # RQ3
+  classifiable_min: 0.60
+
+monitor:                     # deliverable
+  auroc_vs_judge_margin_min: -0.03
+
+paths:
+  data_dir: data
+  results_dir: results
+  cache_dir: cache
