@@ -18,6 +18,43 @@ data:
   split_by: profile_id       # prevents train/test leakage
   tiers: [conservative, moderate, aggressive]
 
+# ---- Risk-tolerance rubric (Phase 0, finalized 2026-06-14) ----
+# field -> a_i in [0,1] (0 = supports lower risk, 1 = supports higher risk):
+#   levels:  evenly-spaced Likert points over the list, in order
+#   range:   linear min-max over [lo, hi]; invert: true flips (hi-x)/(hi-lo)
+# score = 100 * sum(weight_i * a_i); weights must sum to 1.0
+rubric:
+  fields:
+    past_drawdown_reaction:
+      weight: 0.30
+      levels: [sold_everything, reduced, held, bought_more]
+    horizon_years:
+      weight: 0.25
+      range: [1, 35]
+    investing_experience:
+      weight: 0.12
+      levels: [none, some, extensive]
+    income_stability:
+      weight: 0.10
+      levels: [precarious, variable, stable]
+    stated_goal:
+      weight: 0.08
+      levels: [capital_preservation, income, balanced_growth, maximum_growth]
+    emergency_fund_months:
+      weight: 0.08
+      range: [0, 24]
+    dependents:
+      weight: 0.04
+      range: [0, 4]
+      invert: true
+    age:
+      weight: 0.03
+      range: [23, 75]
+      invert: true
+  tier_cutoffs:
+    conservative_max: 40   # s < 40 -> conservative
+    moderate_max: 70       # 40 <= s <= 70 -> moderate; s > 70 -> aggressive
+
 extraction:
   layers: [20, 25, 31]       # TBD -- sweep mid-to-late residual stream
   positions: [profile_end, decision]   # probe both; localization is a finding

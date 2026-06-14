@@ -20,3 +20,6 @@ einops
 pyyaml
 tqdm
 matplotlib
+
+# Testing
+pytest
