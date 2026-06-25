@@ -96,6 +96,22 @@ def risk_tier(score, rubric):
     return "aggressive"
 
 
+# Stated-vs-revealed risk conflict: what the client SAYS they want (stated_goal) vs how
+# they actually BEHAVED in a drawdown (past_drawdown_reaction). A strong mismatch is the
+# "contradictory" case we tag for the S3 integration experiment.
+CONTRADICTION_FIELDS = ("stated_goal", "past_drawdown_reaction")
+
+
+def is_contradictory(profile, rubric, fields=CONTRADICTION_FIELDS, hi=0.8, lo=0.2):
+    """True if `fields` carry strongly opposing risk signals (one a_i >= hi, one <= lo).
+
+    Catches e.g. maximum_growth + sold_everything, or capital_preservation + bought_more;
+    leaves milder mismatches (e.g. maximum_growth + reduced) untagged.
+    """
+    sigs = [field_subscore(rubric["fields"][f], profile[f]) for f in fields]
+    return max(sigs) >= hi and min(sigs) <= lo
+
+
 def sample_rubric_fields(rubric, rng):
     profile = {}
     for field, spec in rubric["fields"].items():

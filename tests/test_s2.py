@@ -5,7 +5,8 @@ import random
 import pytest
 import yaml
 
-from rubric import load_rubric, risk_tier, risk_score
+from rubric import is_contradictory, load_rubric, risk_tier, risk_score
+from s1b_edge_profiles import assign_decoys, build_edge_rubric_fields
 from templates import (
     BAND_PHRASINGS, ENUM_PHRASINGS, NET_WORTH_PHRASINGS, TEMPLATE_IDS,
     build_banned_regex, find_banned, pick_template_id, render,
@@ -88,8 +89,8 @@ def test_template_id_is_deterministic_and_shared_by_twins():
 
 
 # -- twin job construction -------------------------------------------------------------
-def test_twins_share_template_differ_in_type():
-    jobs = build_twin_jobs([SAMPLE_PROFILE], seed=42)
+def test_twins_share_template_differ_in_type(cfg):
+    jobs = build_twin_jobs([SAMPLE_PROFILE], seed=42, rubric=cfg["rubric"])
     assert len(jobs) == 2
     assert jobs[0]["template_id"] == jobs[1]["template_id"]
     assert {j["vignette_type"] for j in jobs} == {"explicit", "implicit"}
@@ -120,20 +121,20 @@ def test_pair_tiers_match_their_drawn_rubric(cfg):
 
 
 # -- finalize / schema -----------------------------------------------------------------
-def test_finalize_schema_and_banned_field(banned):
+def test_finalize_schema_and_banned_field(banned, cfg):
     _, rx = banned
-    job = build_twin_jobs([SAMPLE_PROFILE], seed=42)[1]  # implicit
-    row = finalize(job, "I moved everything into cash.", "gemini-1.5-flash", rx)
+    job = build_twin_jobs([SAMPLE_PROFILE], seed=42, rubric=cfg["rubric"])[1]  # implicit
+    row = finalize(job, "I moved everything into cash.", "gpt-4o-mini", rx)
     assert set(row) == {"vignette_id", "profile_id", "pair_id", "tier", "risk_score",
-                        "vignette_type", "template_id", "paraphrase_model",
-                        "banned_terms_found", "text"}
+                        "vignette_type", "template_id", "contradictory",
+                        "paraphrase_model", "banned_terms_found", "text"}
     assert row["banned_terms_found"] == []
 
 
-def test_finalize_flags_leak(banned):
+def test_finalize_flags_leak(banned, cfg):
     _, rx = banned
-    job = build_twin_jobs([SAMPLE_PROFILE], seed=42)[1]
-    row = finalize(job, "I have a high risk tolerance.", "gemini-1.5-flash", rx)
+    job = build_twin_jobs([SAMPLE_PROFILE], seed=42, rubric=cfg["rubric"])[1]
+    row = finalize(job, "I have a high risk tolerance.", "gpt-4o-mini", rx)
     assert "risk" in [h.lower() for h in row["banned_terms_found"]]
 
 
@@ -142,3 +143,53 @@ def test_render_is_deterministic():
     a = render(SAMPLE_PROFILE, TEMPLATE_IDS[3], "implicit", random.Random(123))
     b = render(SAMPLE_PROFILE, TEMPLATE_IDS[3], "implicit", random.Random(123))
     assert a == b
+
+
+# -- contradiction detection -----------------------------------------------------------
+def test_contradiction_flags_opposite_extremes(cfg):
+    rub = cfg["rubric"]
+    base = dict(SAMPLE_PROFILE)
+    base.update({"stated_goal": "maximum_growth", "past_drawdown_reaction": "sold_everything"})
+    assert is_contradictory(base, rub) is True
+    base.update({"stated_goal": "capital_preservation", "past_drawdown_reaction": "bought_more"})
+    assert is_contradictory(base, rub) is True
+
+
+def test_contradiction_ignores_aligned_and_mild(cfg):
+    rub = cfg["rubric"]
+    aligned = dict(SAMPLE_PROFILE)
+    aligned.update({"stated_goal": "maximum_growth", "past_drawdown_reaction": "bought_more"})
+    assert is_contradictory(aligned, rub) is False
+    mild = dict(SAMPLE_PROFILE)
+    mild.update({"stated_goal": "maximum_growth", "past_drawdown_reaction": "reduced"})
+    assert is_contradictory(mild, rub) is False  # reduced (a=0.33) is not extreme enough
+
+
+def test_contradictory_field_propagates_to_rows(cfg):
+    contra = dict(SAMPLE_PROFILE)
+    contra.update({"stated_goal": "capital_preservation", "past_drawdown_reaction": "bought_more"})
+    jobs = build_twin_jobs([contra], seed=42, rubric=cfg["rubric"])
+    assert all(j["contradictory"] is True for j in jobs)
+
+
+# -- edge generator --------------------------------------------------------------------
+def test_edge_generator_covers_buckets_and_decoys(cfg):
+    rng = random.Random(cfg["seed"])
+    items = build_edge_rubric_fields(cfg["rubric"], rng)
+    profiles = assign_decoys(items, rng)
+    for p in profiles:
+        s = risk_score(p, cfg["rubric"])
+        p["risk_score"], p["tier"] = s, risk_tier(s, cfg["rubric"])
+    buckets = {p["edge_bucket"] for p in profiles}
+    assert {"borderline", "contradiction", "extreme_demo",
+            "anchor_conservative", "anchor_aggressive"} <= buckets
+    # full decoy coverage (all 10 of each)
+    for k in ("occupation", "city", "hobbies"):
+        assert len({p[k] for p in profiles}) == 10
+    # anchors land at the extremes; contradictions are rubric-flagged
+    anchors_c = [p for p in profiles if p["edge_bucket"] == "anchor_conservative"]
+    anchors_a = [p for p in profiles if p["edge_bucket"] == "anchor_aggressive"]
+    assert all(p["tier"] == "conservative" for p in anchors_c)
+    assert all(p["tier"] == "aggressive" for p in anchors_a)
+    assert all(is_contradictory(p, cfg["rubric"])
+               for p in profiles if p["edge_bucket"] == "contradiction")

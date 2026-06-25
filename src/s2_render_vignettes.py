@@ -21,7 +21,9 @@ from pathlib import Path
 
 import yaml
 
-from rubric import risk_score, risk_tier, sample_decoy_fields, sample_rubric_fields
+from rubric import (
+    is_contradictory, risk_score, risk_tier, sample_decoy_fields, sample_rubric_fields,
+)
 from templates import build_banned_regex, find_banned, pick_template_id, render
 from paraphrase import ParaphraseClient
 
@@ -41,11 +43,12 @@ def draw_tier_rubric(rubric, rng, target_tier, max_tries=2000):
     raise RuntimeError(f"could not draw a {target_tier} profile")
 
 
-def build_twin_jobs(profiles, seed):
+def build_twin_jobs(profiles, seed, rubric):
     """One render job per (profile, tier). Returns list of job dicts with template_text."""
     jobs = []
     for p in profiles:
         tid = pick_template_id(p["profile_id"], seed)
+        contradictory = is_contradictory(p, rubric)
         for vtype in ("explicit", "implicit"):
             rng = random.Random(f"{seed}|{p['profile_id']}|{vtype}")
             jobs.append({
@@ -56,6 +59,7 @@ def build_twin_jobs(profiles, seed):
                 "risk_score": p["risk_score"],
                 "vignette_type": vtype,
                 "template_id": tid,
+                "contradictory": contradictory,
                 "template_text": render(p, tid, vtype, rng),
             })
     return jobs
@@ -82,6 +86,7 @@ def build_pair_jobs(rubric, n_pairs, render_tier, seed):
                 "risk_score": profile["risk_score"],
                 "vignette_type": render_tier,
                 "template_id": tid,
+                "contradictory": is_contradictory(profile, rubric),
                 "template_text": render(profile, tid, render_tier, prng),
             })
     return jobs
@@ -98,6 +103,7 @@ def finalize(job, text, model, banned_regex):
         "risk_score": job["risk_score"],
         "vignette_type": job["vignette_type"],
         "template_id": job["template_id"],
+        "contradictory": job["contradictory"],
         "paraphrase_model": model,
         "banned_terms_found": banned,
         "text": text,
@@ -114,6 +120,12 @@ def write_jsonl(path, rows):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config.yaml")
+    ap.add_argument("--profiles", default=None,
+                    help="input profiles.jsonl (default: <data_dir>/profiles.jsonl)")
+    ap.add_argument("--out-dir", default=None,
+                    help="output dir (default: config paths.vignettes_dir)")
+    ap.add_argument("--n-pairs", type=int, default=None,
+                    help="override pair count (0 to skip pairs, e.g. for edge sets)")
     ap.add_argument("--limit", type=int, default=None, help="cap profiles (dev)")
     ap.add_argument("--no-paraphrase", action="store_true", help="template-only, no API")
     ap.add_argument("--backend", default=None, help="override config paraphrase backend")
@@ -126,9 +138,11 @@ def main():
     rubric = cfg["rubric"]
     vcfg = cfg["vignette"]
     pcfg = vcfg["paraphrase"]
-    out_dir = Path(cfg["paths"]["vignettes_dir"])
+    out_dir = Path(args.out_dir) if args.out_dir else Path(cfg["paths"]["vignettes_dir"])
 
-    profiles = load_profiles(Path(cfg["paths"]["data_dir"]) / "profiles.jsonl")
+    profiles_path = (Path(args.profiles) if args.profiles
+                     else Path(cfg["paths"]["data_dir"]) / "profiles.jsonl")
+    profiles = load_profiles(profiles_path)
     # S1 writes profiles in generation order (aggressive tier clusters at the end), so
     # shuffle deterministically before any --limit slice keeps dev subsets tier-representative.
     random.Random(seed).shuffle(profiles)
@@ -138,8 +152,13 @@ def main():
     banned_words = vcfg["banned_lexicon"]
     banned_regex = build_banned_regex(banned_words)
 
-    n_pairs = vcfg["n_pairs"] if not args.limit else max(2, args.limit // 4)
-    twin_jobs = build_twin_jobs(profiles, seed)
+    if args.n_pairs is not None:
+        n_pairs = args.n_pairs
+    elif args.limit:
+        n_pairs = max(2, args.limit // 4)
+    else:
+        n_pairs = vcfg["n_pairs"]
+    twin_jobs = build_twin_jobs(profiles, seed, rubric)
     pair_jobs = build_pair_jobs(rubric, n_pairs, vcfg["pair_render_tier"], seed)
     all_jobs = twin_jobs + pair_jobs
     print(f"Rendered {len(twin_jobs)} twin + {len(pair_jobs)} pair templates; paraphrasing...")
@@ -166,9 +185,11 @@ def main():
 
     leaks = sum(1 for r in rows if r["banned_terms_found"])
     fallbacks = sum(1 for r in rows if r["paraphrase_model"] == "template-only" and not args.no_paraphrase)
+    contra = sum(1 for r in rows if r["contradictory"])
     print(f"Wrote {len(by_file['explicit'])} explicit, {len(by_file['implicit'])} implicit, "
           f"{len(by_file['pairs'])} pair rows to {out_dir}")
-    print(f"  banned-term leaks: {leaks}  |  template-only fallbacks: {fallbacks}")
+    print(f"  contradictory: {contra} rows  |  banned-term leaks: {leaks}  |  "
+          f"template-only fallbacks: {fallbacks}")
     if leaks:
         print("  WARNING: leaks present -- S2B QC will hard-fail until resolved.")
 
