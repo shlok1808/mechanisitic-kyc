@@ -8,6 +8,7 @@ import yaml
 
 from rubric import is_contradictory, load_rubric, risk_tier, risk_score
 from s1b_edge_profiles import assign_decoys, build_edge_rubric_fields
+from s2b_qc import tenure_incoherences
 from templates import (
     BAND_PHRASINGS, ENUM_PHRASINGS, NET_WORTH_PHRASINGS, TEMPLATE_IDS,
     build_banned_regex, find_banned, pick_template_id, render,
@@ -201,3 +202,19 @@ def test_edge_generator_covers_buckets_and_decoys(cfg):
     assert all(p["tier"] == "aggressive" for p in anchors_a)
     assert all(is_contradictory(p, cfg["rubric"])
                for p in profiles if p["edge_bucket"] == "contradiction")
+
+
+# -- QC age/experience coherence -------------------------------------------------------
+def test_tenure_incoherence_flags_young_long_tenure():
+    profiles = {"young": {"profile_id": "young", "age": 23},
+                "old": {"profile_id": "old", "age": 70}}
+    rows = [
+        {"vignette_id": "a", "profile_id": "young",
+         "text": "I'm 23 and I've been actively investing for nearly two decades now."},
+        {"vignette_id": "b", "profile_id": "young",
+         "text": "I'm 23 and I've been through several market cycles."},   # clean
+        {"vignette_id": "c", "profile_id": "old",
+         "text": "I'm 70 and I've been investing for two decades."},        # plausible at 70
+    ]
+    hits = tenure_incoherences(rows, profiles)
+    assert [h["vignette_id"] for h in hits] == ["a"]
