@@ -226,7 +226,11 @@ def main():
     # -- write + summarize -------------------------------------------------------
     res_dir = Path(cfg["paths"]["results_dir"])
     res_dir.mkdir(parents=True, exist_ok=True)
-    (res_dir / "s2_qc_report.json").write_text(json.dumps(report, indent=2))
+    # Report filename tracks the vignettes dir so an edge run doesn't clobber the main one:
+    # data/vignettes -> s2_qc_report.json, data/vignettes_edge -> s2_qc_report_edge.json.
+    tag = re.sub(r"^vignettes_?", "", vdir.name)
+    report_path = res_dir / (f"s2_qc_report_{tag}.json" if tag else "s2_qc_report.json")
+    report_path.write_text(json.dumps(report, indent=2))
 
     def mark(b):
         return "PASS" if b else "FAIL"
@@ -246,7 +250,7 @@ def main():
         print(f"[----] round-trip tier recovery: {rt['accuracy']:.2f} on n={rt['n']} (chance ~0.33)")
     else:
         print("[----] round-trip tier recovery: skipped (no API key)")
-    print(f"report -> {res_dir / 's2_qc_report.json'}")
+    print(f"report -> {report_path}")
 
     soft = [n for n, ok in (("tier balance", bal_ok), ("token length", len_ok),
                             ("duplicates", dup_ok), ("age/experience coherence", coh_ok)) if not ok]
