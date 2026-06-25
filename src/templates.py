@@ -105,9 +105,12 @@ ENUM_PHRASINGS = {
         },
         "extensive": {
             "explicit": ["I'm a very experienced investor and comfortable with aggressive positions."],
+            # Duration-free: convey deep experience without asserting a tenure that would
+            # contradict young ages (age and experience are sampled independently).
             "implicit": [
-                "I've been investing actively for a couple of decades.",
-                "I've managed my own portfolio through several market cycles.",
+                "I've been through several market cycles and know how I react when things get rough.",
+                "I'm a seasoned investor and comfortable making my own calls.",
+                "I know my way around the markets and manage my own portfolio confidently.",
             ],
         },
     },

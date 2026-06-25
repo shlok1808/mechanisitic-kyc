@@ -1,6 +1,7 @@
 """Offline unit tests for S2 (no API calls)."""
 
 import random
+import re
 
 import pytest
 import yaml
@@ -74,6 +75,13 @@ def test_rendered_implicit_profile_is_clean(banned):
     for tid in TEMPLATE_IDS[:8]:
         text = render(SAMPLE_PROFILE, tid, "implicit", random.Random(0))
         assert find_banned(text, rx) == []
+
+
+def test_extensive_experience_phrasings_are_duration_free():
+    # Guards the age/experience impossibility: extensive experience must not assert a
+    # tenure ("two decades", "for N years") that conflicts with young sampled ages.
+    for s in ENUM_PHRASINGS["investing_experience"]["extensive"]["implicit"]:
+        assert not re.search(r"\b(decade|year)", s, re.I), s
 
 
 def test_explicit_render_contains_facts():
