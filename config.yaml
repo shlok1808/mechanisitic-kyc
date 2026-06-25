@@ -61,6 +61,39 @@ extraction:
 
 advice_tasks: [portfolio_choice, equity_allocation, margin_approval]
 
+# ---- S2 vignette rendering ----
+# Vignettes store the CLIENT NARRATIVE ONLY. The advice-task options (A-D/E) are
+# composed at inference (S3) with option-order permutation, so they live here as a
+# forward reference for S3 -- S2 does not consume `advice_options`.
+vignette:
+  n_pairs: 1200
+  pair_render_tier: implicit   # render counterfactual pairs in this tier
+  paraphrase:
+    backend: openai            # openai | gemini
+    model: gpt-4o-mini         # or gemini-1.5-flash
+    temperature: 0.7
+    max_retries: 4
+    max_workers: 8             # thread pool for API throughput
+  # Banned in IMPLICIT tier only; regex is word-boundary + stem (risk -> risky, riskier).
+  # 'moderate' deliberately excluded: over-filters normal English ("a moderate income").
+  banned_lexicon: [risk, conservative, aggressive, volatile, volatility, tolerance,
+                   cautious, caution, safe, safety, secure, gamble, speculative,
+                   speculation, bold, daring, timid, wary, prudent, reckless]
+  qc:
+    tier_balance_tol: 0.02     # tier shares within +/- 2%
+    token_len_tol: 0.10        # mean token length matched across tiers/types +/- 10%
+    dup_fraction_max: 0.005    # MinHash near-dup fraction < 0.5%
+    roundtrip_sample: 50       # implicit vignettes sampled for tier-recovery check
+
+# Forward reference for S3 (NOT used by S2): the user's 4-option allocation task.
+advice_options:
+  portfolio_choice:
+    - "80% bonds, 20% stocks"
+    - "60% bonds, 40% stocks"
+    - "30% bonds, 70% stocks"
+    - "10% bonds, 90% stocks"
+  equity_fractions: [0.20, 0.40, 0.70, 0.90]   # score anchors for the weighted average
+
 # ---- Pre-registered thresholds ----
 
 gate:                        # Phase 1 (go/no-go)
@@ -96,3 +129,4 @@ paths:
   data_dir: data
   results_dir: results
   cache_dir: cache
+  vignettes_dir: data/vignettes

@@ -21,5 +21,10 @@ pyyaml
 tqdm
 matplotlib
 
+# S2 vignette rendering (paraphrase backends optional; install the one you use)
+datasketch                 # MinHash near-dup QC
+# google-generativeai      # Gemini Flash paraphrase backend
+# openai                   # GPT-4o-mini paraphrase backend
+
 # Testing
 pytest
