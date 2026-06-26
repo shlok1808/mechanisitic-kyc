@@ -97,10 +97,27 @@ class ParaphraseClient:
                 time.sleep(2 ** attempt)
 
     # -- caching -----------------------------------------------------------------
+    def _cache_id(self, mode, text):
+        """Stable id for (mode, source text) -- also used as the Batch API custom_id."""
+        return hashlib.sha1(f"{self.backend}|{self.model}|{mode}|{text}".encode()).hexdigest()
+
     def _cache_path(self, mode, text):
-        h = hashlib.sha1(
-            f"{self.backend}|{self.model}|{mode}|{text}".encode()).hexdigest()
-        return self.cache_dir / f"{h}.json"
+        return self.cache_dir / f"{self._cache_id(mode, text)}.json"
+
+    def is_cached(self, mode, text):
+        return self._cache_path(mode, text).exists()
+
+    def _build_prompt(self, mode, text, reinforce=False):
+        if mode != "implicit":
+            return text
+        p = text + _IMPLICIT_RULE.format(banned=", ".join(self.banned_words))
+        if reinforce:
+            p += " You used a forbidden word last time. Try again, avoiding ALL of them."
+        return p
+
+    def _store(self, mode, text, out, model):
+        self._cache_path(mode, text).write_text(json.dumps({"text": out, "model": model}))
+        return out, model
 
     # -- public ------------------------------------------------------------------
     def paraphrase_one(self, text, mode):
@@ -113,24 +130,16 @@ class ParaphraseClient:
             d = json.loads(cp.read_text())
             return d["text"], d["model"]
 
-        prompt = text
-        if mode == "implicit":
-            prompt = text + _IMPLICIT_RULE.format(banned=", ".join(self.banned_words))
-
         out, model = None, self.model
-        for _ in range(self.max_retries):
-            cand = self._call(prompt)
+        for attempt in range(self.max_retries):
+            cand = self._call(self._build_prompt(mode, text, reinforce=attempt > 0))
             if mode == "implicit" and find_banned(cand, self.banned_regex):
-                prompt = (text + _IMPLICIT_RULE.format(banned=", ".join(self.banned_words))
-                          + " You used a forbidden word last time. Try again, avoiding ALL of them.")
                 continue
             out = cand
             break
         if out is None:  # never produced a clean implicit rewrite -> use the clean template
             out, model = text, "template-only"
-
-        cp.write_text(json.dumps({"text": out, "model": model}))
-        return out, model
+        return self._store(mode, text, out, model)
 
     def paraphrase_batch(self, jobs):
         """jobs: list of (text, mode). Returns list of (final_text, model), order-preserved."""
@@ -142,3 +151,73 @@ class ParaphraseClient:
             for fut in futs:
                 results[futs[fut]] = fut.result()
         return results
+
+    # -- OpenAI Batch API (async, 50% cheaper, separate rate limits -- no RPD wall) ----
+    def build_batch(self, jobs):
+        """jobs: list of (text, mode). Returns (request_lines, sidecar) for UNCACHED jobs.
+
+        request_lines: dicts ready to write as the Batch API input JSONL.
+        sidecar: {custom_id -> {mode, source}} so the collector can map results back,
+                 re-run the banned-word check, and fall back to template-only on leaks.
+        """
+        if self.backend != "openai":
+            raise ValueError("Batch mode requires backend 'openai'")
+        seen, lines, sidecar = set(), [], {}
+        for text, mode in jobs:
+            if self.is_cached(mode, text):
+                continue
+            cid = self._cache_id(mode, text)
+            if cid in seen:          # identical (mode, text) appears twice -> one request
+                continue
+            seen.add(cid)
+            lines.append({
+                "custom_id": cid, "method": "POST", "url": "/v1/chat/completions",
+                "body": {"model": self.model, "temperature": self.temperature,
+                         "messages": [{"role": "system", "content": _SYSTEM},
+                                      {"role": "user", "content": self._build_prompt(mode, text)}]},
+            })
+            sidecar[cid] = {"mode": mode, "source": text}
+        return lines, sidecar
+
+    def submit_batch(self, input_path):
+        """Upload the input JSONL and create a batch. Returns batch_id."""
+        self._ensure_client()
+        with open(input_path, "rb") as f:
+            up = self._client.files.create(file=f, purpose="batch")
+        batch = self._client.batches.create(
+            input_file_id=up.id, endpoint="/v1/chat/completions", completion_window="24h")
+        return batch.id
+
+    def batch_status(self, batch_id):
+        """Return the raw batch object (.status, .request_counts, .output_file_id, ...)."""
+        self._ensure_client()
+        return self._client.batches.retrieve(batch_id)
+
+    def collect_batch(self, batch_id, sidecar):
+        """Download a completed batch's output and populate the cache. Returns a summary."""
+        self._ensure_client()
+        batch = self._client.batches.retrieve(batch_id)
+        if batch.status != "completed" and not batch.output_file_id:
+            return {"status": batch.status, "cached": 0, "fallbacks": 0, "errors": 0}
+        text = self._client.files.content(batch.output_file_id).text
+        cached = fallbacks = errors = 0
+        for line in text.splitlines():
+            rec = json.loads(line)
+            meta = sidecar.get(rec["custom_id"])
+            if meta is None:
+                continue
+            mode, source = meta["mode"], meta["source"]
+            content = None
+            resp = rec.get("response")
+            if resp and resp.get("status_code") == 200:
+                content = resp["body"]["choices"][0]["message"]["content"].strip()
+            if content and not (mode == "implicit" and find_banned(content, self.banned_regex)):
+                self._store(mode, source, content, self.model)
+            else:                                    # error, empty, or leaked -> clean template
+                self._store(mode, source, source, "template-only")
+                fallbacks += 1
+            cached += 1
+            if content is None:
+                errors += 1
+        return {"status": batch.status, "cached": cached,
+                "fallbacks": fallbacks, "errors": errors}

@@ -1,5 +1,6 @@
 """Offline unit tests for S2 (no API calls)."""
 
+import json
 import random
 import re
 
@@ -218,3 +219,60 @@ def test_tenure_incoherence_flags_young_long_tenure():
     ]
     hits = tenure_incoherences(rows, profiles)
     assert [h["vignette_id"] for h in hits] == ["a"]
+
+
+# -- Batch API (offline; no live OpenAI calls) -----------------------------------------
+from paraphrase import ParaphraseClient  # noqa: E402
+from templates import build_banned_regex as _bbr  # noqa: E402
+
+
+def _client(tmp_path, banned):
+    words, _ = banned
+    return ParaphraseClient(backend="openai", model="gpt-4o-mini", banned_words=words,
+                            banned_regex=_bbr(words), cache_dir=tmp_path)
+
+
+def test_build_batch_skips_cached_and_dedups(tmp_path, banned):
+    c = _client(tmp_path, banned)
+    # pre-cache one job so it is excluded from the batch
+    c._store("explicit", "already done", "cached out", "gpt-4o-mini")
+    jobs = [("already done", "explicit"),
+            ("fresh one", "implicit"),
+            ("fresh one", "implicit")]            # duplicate -> single request
+    lines, sidecar = c.build_batch(jobs)
+    assert len(lines) == 1
+    line = lines[0]
+    assert line["custom_id"] == c._cache_id("implicit", "fresh one")
+    assert line["url"] == "/v1/chat/completions"
+    # implicit prompt carries the banned-word instruction
+    assert "do NOT use" in line["body"]["messages"][1]["content"]
+    assert sidecar[line["custom_id"]] == {"mode": "implicit", "source": "fresh one"}
+
+
+class _Fake:
+    """Minimal stand-in for the OpenAI client used by collect_batch."""
+    class _B:
+        status, output_file_id = "completed", "out123"
+    def __init__(self, text):
+        self._text = text
+        self.batches = type("X", (), {"retrieve": lambda s, b: _Fake._B()})()
+        self.files = type("X", (), {"content": lambda s, f: type("R", (), {"text": text})()})()
+
+
+def test_collect_batch_caches_clean_and_falls_back_on_leak(tmp_path, banned):
+    c = _client(tmp_path, banned)
+    jobs = [("narrative a", "implicit"), ("narrative b", "implicit")]
+    _, sidecar = c.build_batch(jobs)
+    ids = list(sidecar)
+    clean_id = next(i for i in ids if sidecar[i]["source"] == "narrative a")
+    leak_id = next(i for i in ids if sidecar[i]["source"] == "narrative b")
+    out = "\n".join(json.dumps({
+        "custom_id": cid,
+        "response": {"status_code": 200, "body": {"choices": [{"message": {"content": content}}]}},
+    }) for cid, content in [(clean_id, "I moved everything into cash."),
+                            (leak_id, "I have a high risk tolerance.")])  # leaked
+    c._client = _Fake(out)  # bypass _ensure_client
+    summary = c.collect_batch("batch_x", sidecar)
+    assert summary["cached"] == 2 and summary["fallbacks"] == 1
+    assert c.paraphrase_one("narrative a", "implicit") == ("I moved everything into cash.", "gpt-4o-mini")
+    assert c.paraphrase_one("narrative b", "implicit") == ("narrative b", "template-only")

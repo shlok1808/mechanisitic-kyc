@@ -117,6 +117,29 @@ def write_jsonl(path, rows):
             f.write(json.dumps(r) + "\n")
 
 
+def submit_batch_and_exit(client, all_jobs, results_dir):
+    """Write uncached jobs to a Batch API input file, submit, persist batch_id + sidecar."""
+    results_dir.mkdir(parents=True, exist_ok=True)
+    lines, sidecar = client.build_batch([(j["template_text"], j["vignette_type"]) for j in all_jobs])
+    cached = len(all_jobs) - len(lines)
+    if not lines:
+        print(f"All {len(all_jobs)} jobs already cached -- nothing to batch. "
+              f"Run normally to render + QC.")
+        return
+
+    input_path = results_dir / "s2_batch_input.jsonl"
+    with open(input_path, "w") as f:
+        for line in lines:
+            f.write(json.dumps(line) + "\n")
+    (results_dir / "s2_batch_sidecar.json").write_text(json.dumps(sidecar))
+
+    batch_id = client.submit_batch(input_path)
+    (results_dir / "s2_batch_id.txt").write_text(batch_id)
+    print(f"Submitted {len(lines)} uncached jobs ({cached} already cached) to Batch API.")
+    print(f"  batch_id: {batch_id}  ->  {results_dir / 's2_batch_id.txt'}")
+    print(f"  collect with: python3 src/s2_collect_batch.py")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config.yaml")
@@ -129,6 +152,9 @@ def main():
     ap.add_argument("--limit", type=int, default=None, help="cap profiles (dev)")
     ap.add_argument("--no-paraphrase", action="store_true", help="template-only, no API")
     ap.add_argument("--backend", default=None, help="override config paraphrase backend")
+    ap.add_argument("--batch", action="store_true",
+                    help="submit uncached jobs to the OpenAI Batch API and exit "
+                         "(collect later with src/s2_collect_batch.py)")
     args = ap.parse_args()
 
     with open(args.config) as f:
@@ -170,6 +196,11 @@ def main():
         temperature=pcfg["temperature"], max_retries=pcfg["max_retries"],
         max_workers=pcfg.get("max_workers", 8), enabled=not args.no_paraphrase,
     )
+
+    if args.batch:
+        submit_batch_and_exit(client, all_jobs, Path(cfg["paths"]["results_dir"]))
+        return
+
     outputs = client.paraphrase_batch([(j["template_text"], j["vignette_type"]) for j in all_jobs])
     rows = [finalize(j, t, m, banned_regex) for j, (t, m) in zip(all_jobs, outputs)]
 
