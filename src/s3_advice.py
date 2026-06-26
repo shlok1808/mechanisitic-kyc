@@ -87,10 +87,14 @@ def load_model(model_id, dtype, attn_impl, device):
     from transformers import AutoModelForCausalLM, AutoTokenizer
     tok = AutoTokenizer.from_pretrained(model_id)
     tok.padding_side = "left"  # so logits[:, -1] is the real last token for every row
-    kw = dict(torch_dtype=getattr(torch, dtype), attn_implementation=attn_impl)
+    kw = dict(attn_implementation=attn_impl)
     if device == "cuda":
         kw["device_map"] = "cuda"
-    model = AutoModelForCausalLM.from_pretrained(model_id, **kw)
+    torch_dt = getattr(torch, dtype)
+    try:                                            # `dtype` on new transformers
+        model = AutoModelForCausalLM.from_pretrained(model_id, dtype=torch_dt, **kw)
+    except TypeError:                               # `torch_dtype` on older transformers
+        model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch_dt, **kw)
     if device != "cuda":
         model = model.to(device)
     model.eval()
