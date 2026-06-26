@@ -23,16 +23,20 @@ import yaml
 
 from templates import build_banned_regex, find_banned
 
-# A client who is sampled young (age <= TENURE_YOUNG_MAX) but whose text asserts a long
-# investing tenure ("investing for two decades") is incoherent -- it implies they started
-# investing as a child. age and investing_experience are sampled independently, so this is
-# a real risk; flagged soft so a few odd phrasings don't block the pipeline.
+# A client sampled young (age <= TENURE_YOUNG_MAX) whose text asserts a long PAST investing
+# tenure ("been investing for two decades") is incoherent -- it implies they started as a
+# child. age and investing_experience are sampled independently, so this is a real risk.
+# The pattern is deliberately tight: a past-investing verb, then for/since, then a LONG
+# duration (decades, or >=10 years). It must NOT fire on future horizon ("won't need this
+# money for several decades"), short plausible tenures ("investing for a few years"), or
+# vague phrasing ("investing for a while"). Flagged soft so it never blocks the pipeline.
 TENURE_YOUNG_MAX = 30
-TENURE_PAT = re.compile(
-    r"(invest\w*\s+(actively\s+)?(for|since)\s+\w*\s*\w*\s*(years?|decades?)"
-    r"|(a\s+)?(couple|few|several|two|three|four|five)\s+(of\s+)?decades"
-    r"|decades?\s+of\s+\w*\s*invest"
-    r"|been\s+\w*\s*invest\w*\s+(for|nearly|about))", re.I)
+_PAST_INVEST = r"(?:been\s+(?:actively\s+)?investing|been\s+an\s+investor|investing|invested)"
+_CONNECT = r"\s+(?:for|since)\s+(?:the\s+|past\s+|last\s+|about\s+|nearly\s+|over\s+|almost\s+|roughly\s+)*"
+_LONG_DUR = (r"(?:(?:a\s+couple\s+of\s+|two|three|four|five|six|seven|eight|nine|several|many|"
+             r"ten|fifteen|twenty|thirty|\d{2})\s+decades?"
+             r"|(?:ten|fifteen|twenty|thirty|\d{2})\s+years?)")
+TENURE_PAT = re.compile(_PAST_INVEST + _CONNECT + _LONG_DUR, re.I)
 
 
 def read_jsonl(path):
