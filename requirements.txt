@@ -4,6 +4,7 @@ transformers
 accelerate
 huggingface_hub
 datasets
+sentencepiece              # Gemma/Llama tokenizers
 
 # Numerics / stats
 numpy
