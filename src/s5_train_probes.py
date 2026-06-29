@@ -326,9 +326,12 @@ def run(cfg, args):
     sweep = {p: {} for p in positions}
     proba_store = {}            # (layer, position) -> {'val','imp'} for the ensemble
     best = {"implicit_auroc": -1.0}
+    n_cells = len(positions) * len(layers)
+    cell = 0
     for p in positions:
         p_idx = positions_all.index(p)
         for l in layers:
+            cell += 1
             l_idx = cfg_layers.index(l)
             plane = load_plane(acts, l_idx, p_idx)
             Xtr, Xva = plane[idx["train"]], plane[idx["val"]]
@@ -337,10 +340,11 @@ def run(cfg, args):
             et_auc, et_acc, _ = eval_probe(probe, Xet, tier[idx["explicit_test"]])
             it_auc, it_acc, it_proba = eval_probe(probe, Xit, tier[idx["implicit_test"]])
             _, _, va_proba = eval_probe(probe, Xva, yva)
-            # shuffled-label control (selectivity): shuffle BOTH train and val labels so C
-            # selection can't peek at the real signal; then score on the REAL implicit test.
+            # shuffled-label control (selectivity): shuffle BOTH train and val labels so the
+            # fit can't peek at the real signal; fixed C (no grid -- a control needs no tuning,
+            # and tuning it on real val is exactly the leak we fixed earlier). Score on real test.
             ctrl = fit_logistic(Xtr, ytr[rng.permutation(len(ytr))],
-                                Xva, yva[rng.permutation(len(yva))], seed=cfg["seed"])
+                                Xva, yva[rng.permutation(len(yva))], Cs=(0.1,), seed=cfg["seed"])
             ctrl_auc, _, _ = eval_probe(ctrl, Xit, tier[idx["implicit_test"]])
             r2 = ridge_r2(Xtr, str_tr, Xit, score[idx["implicit_test"]], seed=cfg["seed"])
             rec = {"frac_depth": fractional_depth(l, n_layers_model),
@@ -356,8 +360,9 @@ def run(cfg, args):
                         "frac_depth": rec["frac_depth"], "implicit_auroc": round(it_auc, 4),
                         "ridge_r2": round(r2, 4), "probe": probe,
                         "ridge_coef": None}
-        print(f"    [{p}] best so far: L{best.get('layer')} "
-              f"AUROC={best['implicit_auroc']:.4f}")
+            print(f"    [{cell:>3}/{n_cells}] {p:<12} L{l:<2} "
+                  f"implicit AUROC={it_auc:.4f} (best L{best['layer']}={best['implicit_auroc']:.4f})",
+                  flush=True)
 
     # ---- headline CI + 5-seed stability at l* ----
     if "layer" not in best:
