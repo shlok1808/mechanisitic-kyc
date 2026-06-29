@@ -459,9 +459,11 @@ def run(cfg, args):
     }
     thresholds["RQ1_clean_win"] = bool(thresholds["auroc_pass"] and thresholds["baseline_margin_pass"])
 
-    # ---- persist ----
+    # ---- persist (model-tagged so 2B-dev and 9B-prod runs never collide) ----
+    from s4_cache_activations import model_tag
+    tag = model_tag(meta["model"])
     res_dir = Path(cfg["paths"]["results_dir"])
-    probe_dir = res_dir / "probes"
+    probe_dir = res_dir / "probes" / tag
     probe_dir.mkdir(parents=True, exist_ok=True)
     # best overall + the best layer at each position (S10/S11 read at 'decision'), reusing the
     # probes already fit in the sweep -- no refitting.
@@ -484,7 +486,7 @@ def run(cfg, args):
         "seed_stability": stability, "baselines": baselines, "ensemble": ensemble,
         "thresholds": thresholds, "sweep": sweep,
     }
-    out = res_dir / "s5_probe_results.json"
+    out = res_dir / f"s5_probe_results_{tag}.json"
     out.write_text(json.dumps(report, indent=2))
     _print_summary(report)
     print(f"  report -> {out}  |  probes -> {probe_dir}")
