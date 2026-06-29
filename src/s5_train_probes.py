@@ -310,6 +310,23 @@ def _sweep_cell(acts_path, l_idx, p_idx, layer, position, frac, idx,
             "rec": rec, "va_proba": va_proba, "it_proba": it_proba, "probe": probe}
 
 
+def _seed_fit(acts_path, l_idx, p_idx, tr_idx, va_idx, it_idx, ytr, yva, yit, seed):
+    """One split-seed refit at the best (layer, position), for the stability check. Runs in a
+    worker with one BLAS thread so the seeds parallelize instead of serializing in main."""
+    try:
+        from threadpoolctl import threadpool_limits
+        ctx = threadpool_limits(1)
+    except Exception:
+        import contextlib
+        ctx = contextlib.nullcontext()
+    with ctx:
+        acts = np.load(acts_path, mmap_mode="r")
+        plane = load_plane(acts, l_idx, p_idx)
+        pr = fit_logistic(plane[tr_idx], ytr, plane[va_idx], yva, seed=seed)
+        a, _, _ = eval_probe(pr, plane[it_idx], yit)
+    return round(a, 4)
+
+
 # --------------------------------------------------------------------------------------
 # Driver
 # --------------------------------------------------------------------------------------
@@ -404,14 +421,15 @@ def run(cfg, args):
                              probe_proba(best["probe"], plane[idx["implicit_test"]]),
                              best["probe"]["classes"], seed=cfg["seed"])
     best["ci"] = [round(lo, 4), round(hi, 4)]
-    seed_aucs = []
-    for s in range(args.seeds):
-        sp = make_splits([lab["profile_id"] for lab in labels], seed=cfg["seed"] + s)
-        si = split_indices(labels, sp)
-        pr = fit_logistic(plane[si["train"]], tier[si["train"]], plane[si["val"]], tier[si["val"]],
-                          seed=cfg["seed"] + s)
-        a, _, _ = eval_probe(pr, plane[si["implicit_test"]], tier[si["implicit_test"]])
-        seed_aucs.append(round(a, 4))
+    profile_ids = [lab["profile_id"] for lab in labels]
+    seed_splits = [split_indices(labels, make_splits(profile_ids, seed=cfg["seed"] + s))
+                   for s in range(args.seeds)]
+    seed_aucs = Parallel(n_jobs=min(n_jobs, max(1, args.seeds)))(
+        delayed(_seed_fit)(acts_path, best["l_idx"], best["p_idx"],
+                           si["train"], si["val"], si["implicit_test"],
+                           tier[si["train"]], tier[si["val"]], tier[si["implicit_test"]],
+                           cfg["seed"] + s)
+        for s, si in enumerate(seed_splits))
     stability = {"implicit_auroc_mean": round(float(np.mean(seed_aucs)), 4),
                  "std": round(float(np.std(seed_aucs)), 4), "seeds": seed_aucs}
 
