@@ -18,21 +18,9 @@ from pathlib import Path
 
 import numpy as np
 import yaml
-from scipy.stats import spearmanr, wilcoxon
+from scipy.stats import wilcoxon
 
-
-def spearman_ci(x, y, n_boot=2000, seed=42):
-    x, y = np.asarray(x, float), np.asarray(y, float)
-    rho = spearmanr(x, y).correlation
-    rng = np.random.default_rng(seed)
-    boot = []
-    idx = np.arange(len(x))
-    for _ in range(n_boot):
-        s = rng.choice(idx, size=len(idx), replace=True)
-        if np.std(x[s]) > 0 and np.std(y[s]) > 0:
-            boot.append(spearmanr(x[s], y[s]).correlation)
-    lo, hi = np.percentile(boot, [2.5, 97.5]) if boot else (float("nan"), float("nan"))
-    return float(rho), float(lo), float(hi)
+from utils.stats import spearman_ci
 
 
 def baseline_rows(rows):
