@@ -206,7 +206,7 @@ def load_texts(cfg):
 # --------------------------------------------------------------------------------------
 # Probes (sklearn, CPU)
 # --------------------------------------------------------------------------------------
-def fit_logistic(Xtr, ytr, Xva, yva, Cs=(0.01, 0.1, 1.0, 10.0), seed=42):
+def fit_logistic(Xtr, ytr, Xva, yva, Cs=(0.001, 0.01, 0.1, 1.0), seed=42):
     """Standardize on train, grid C on val macro-AUROC, refit best. Returns a probe dict."""
     from sklearn.linear_model import LogisticRegression
     from sklearn.preprocessing import StandardScaler
