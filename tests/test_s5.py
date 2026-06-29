@@ -147,3 +147,28 @@ def test_consolidate_and_load_plane(tmp_path):
     # idempotent: second call reuses acts_all.npy
     acts2, labels2, _ = consolidate(tmp_path)
     assert acts2.shape == (10, L, P, d) and labels2[6]["vignette_id"] == "v1_1"
+
+
+def test_consolidate_rebuilds_when_a_shard_is_added(tmp_path):
+    """A stale acts_all.npy (from an earlier smaller run) must be rebuilt, not reused."""
+    import os
+    L, P, d = 2, 3, 8
+    (tmp_path / "meta.json").write_text(json.dumps(
+        {"model": "toy", "layers": [0, 1], "positions": ["profile_end", "profile_mean", "decision"],
+         "hidden_size": d, "num_hidden_layers": 4}))
+
+    def shard(s, n):
+        acts = np.zeros((n, L, P, d), np.float32)
+        labs = [{"vignette_id": f"v{s}_{i}", "profile_id": f"p{s}_{i}", "pair_id": None,
+                 "tier": "moderate", "risk_score": 0.0, "vignette_type": "explicit",
+                 "contradictory": False} for i in range(n)]
+        _write_shard(tmp_path / f"shard_{s:04d}.npz", acts, labs)
+
+    shard(0, 5)
+    acts, labels, _ = consolidate(tmp_path)
+    assert acts.shape[0] == 5                      # initial (small) consolidation
+
+    shard(1, 7)                                    # S4 appends a new shard later
+    os.utime(tmp_path / "shard_0001.npz", (1 << 31, 1 << 31))   # ensure it's newer than acts_all
+    acts2, labels2, _ = consolidate(tmp_path)
+    assert acts2.shape[0] == 12 and len(labels2) == 12          # rebuilt, not the stale 5

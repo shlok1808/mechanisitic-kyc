@@ -142,11 +142,16 @@ def consolidate(act_dir):
     label_keys = ["vignette_id", "profile_id", "pair_id", "tier", "risk_score",
                   "vignette_type", "contradictory"]
 
+    # Reuse only if the consolidation is internally consistent AND up to date with the shards
+    # (a stale acts_all.npy from a smaller earlier run -- e.g. an S4 --dry-run -- must NOT be
+    # reused after S4 has written more shards).
     if acts_path.exists() and labels_path.exists():
         labels = [json.loads(l) for l in open(labels_path)]
         acts = np.load(acts_path, mmap_mode="r")
-        if acts.shape[0] == len(labels):
-            return acts, labels, meta   # already consolidated
+        fresh = acts_path.stat().st_mtime >= max(sh.stat().st_mtime for sh in shards)
+        if acts.shape[0] == len(labels) and fresh:
+            return acts, labels, meta   # already consolidated and current
+        print(f"    stale/partial acts_all.npy ({acts.shape[0]} rows) -> rebuilding from {len(shards)} shards")
 
     # Stream shards into one memmap.
     n_total = 0
