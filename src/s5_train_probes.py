@@ -33,12 +33,21 @@ import argparse
 import hashlib
 import json
 import subprocess
+import warnings
 from pathlib import Path
 
 import numpy as np
 import yaml
 
 from utils.stats import auroc_ci, macro_ovr_auroc
+
+# Degenerate splits (a tier missing from a tiny test set) make OvR AUROC undefined; we guard
+# for that explicitly below, so silence the per-call sklearn noise.
+try:
+    from sklearn.exceptions import UndefinedMetricWarning
+    warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
+except Exception:
+    pass
 
 PAIRS_EXCLUDED = True   # probe trains/tests on twins only; counterfactual pairs are for S6
 
@@ -275,6 +284,15 @@ def run(cfg, args):
     score = np.array([lab["risk_score"] for lab in labels], dtype=float)
     print(f"S5: train={len(idx['train'])} val={len(idx['val'])} "
           f"explicit_test={len(idx['explicit_test'])} implicit_test={len(idx['implicit_test'])}")
+    n_tiers = len(set(tier))
+    for key in ("train", "val", "implicit_test"):
+        present = set(tier[idx[key]]) if len(idx[key]) else set()
+        if len(idx[key]) < 3 * n_tiers or len(present) < n_tiers:
+            raise RuntimeError(
+                f"split '{key}' is degenerate ({len(idx[key])} rows, tiers present={sorted(present)} "
+                f"of {n_tiers}). The probe needs every tier in each split. This usually means the "
+                f"activation cache is too small -- DON'T run S5 on an S4 --dry-run (100-vignette) "
+                f"cache; cache the full set (drop --dry-run) even on the 2B dev model.")
     print(f"    sweep: {len(layers)} layers x {len(positions)} positions")
 
     ytr, yva = tier[idx["train"]], tier[idx["val"]]
@@ -335,6 +353,10 @@ def run(cfg, args):
               f"AUROC={best['implicit_auroc']:.4f}")
 
     # ---- headline CI + 5-seed stability at l* ----
+    if "layer" not in best:
+        raise RuntimeError("no (layer, position) produced a valid AUROC -- every probe returned "
+                           "NaN, which means a tier is missing from implicit_test. Use a larger "
+                           "activation cache (not an S4 --dry-run).")
     bl, bp = best["layer"], best["position"]
     plane = load_plane(acts, best["l_idx"], best["p_idx"])
     point, lo, hi = auroc_ci(tier[idx["implicit_test"]],
