@@ -206,8 +206,13 @@ def load_texts(cfg):
 # --------------------------------------------------------------------------------------
 # Probes (sklearn, CPU)
 # --------------------------------------------------------------------------------------
-def fit_logistic(Xtr, ytr, Xva, yva, Cs=(0.001, 0.01, 0.1, 1.0), seed=42):
-    """Standardize on train, grid C on val macro-AUROC, refit best. Returns a probe dict."""
+def fit_logistic(Xtr, ytr, Xva, yva, Cs=(0.001, 0.01, 0.1), max_iter=1000, seed=42):
+    """Standardize on train, grid C on val macro-AUROC, refit best. Returns a probe dict.
+
+    C-grid stays in the regularized range: high-dim activations (~2-4k) are near-separable, so
+    weak regularization (C>=1) needs thousands of lbfgs iterations and never really converges,
+    while C<=0.1 converges fast and generalizes better. max_iter caps the worst case.
+    """
     from sklearn.linear_model import LogisticRegression
     from sklearn.preprocessing import StandardScaler
     scaler = StandardScaler().fit(Xtr)
@@ -215,7 +220,7 @@ def fit_logistic(Xtr, ytr, Xva, yva, Cs=(0.001, 0.01, 0.1, 1.0), seed=42):
     classes = sorted(set(ytr))
     best, best_auc = None, -1.0
     for C in Cs:
-        clf = LogisticRegression(C=C, max_iter=5000, random_state=seed)
+        clf = LogisticRegression(C=C, max_iter=max_iter, random_state=seed)
         clf.fit(Xtr_s, ytr)
         auc = macro_ovr_auroc(yva, clf.predict_proba(Xva_s), list(clf.classes_))
         if auc > best_auc:
@@ -271,6 +276,41 @@ def probe_to_npz(path, probe, ridge_coef, layer, position, frac):
 
 
 # --------------------------------------------------------------------------------------
+# Parallel sweep: one independent (layer, position) cell per worker, 1 BLAS thread each
+# (28 small fits across the cores beats one fit spread thin over 28 cores).
+# --------------------------------------------------------------------------------------
+def _sweep_cell(acts_path, l_idx, p_idx, layer, position, frac, idx,
+                ytr, yva, str_tr, tier_et, tier_it, score_it, n_layers_model, cell_seed):
+    try:
+        from threadpoolctl import threadpool_limits
+        ctx = threadpool_limits(1)
+    except Exception:
+        import contextlib
+        ctx = contextlib.nullcontext()
+    with ctx:
+        acts = np.load(acts_path, mmap_mode="r")
+        plane = load_plane(acts, l_idx, p_idx)
+        Xtr, Xva = plane[idx["train"]], plane[idx["val"]]
+        Xet, Xit = plane[idx["explicit_test"]], plane[idx["implicit_test"]]
+        probe = fit_logistic(Xtr, ytr, Xva, yva, seed=cell_seed)
+        et_auc, et_acc, _ = eval_probe(probe, Xet, tier_et)
+        it_auc, it_acc, it_proba = eval_probe(probe, Xit, tier_it)
+        _, _, va_proba = eval_probe(probe, Xva, yva)
+        rng = np.random.default_rng(cell_seed)        # deterministic per-cell control shuffle
+        ctrl = fit_logistic(Xtr, ytr[rng.permutation(len(ytr))],
+                            Xva, yva[rng.permutation(len(yva))], Cs=(0.1,), seed=cell_seed)
+        ctrl_auc, _, _ = eval_probe(ctrl, Xit, tier_it)
+        r2 = ridge_r2(Xtr, str_tr, Xit, score_it, seed=cell_seed)
+    rec = {"frac_depth": frac,
+           "explicit_test": {"auroc": round(et_auc, 4), "acc": round(et_acc, 4)},
+           "implicit_test": {"auroc": round(it_auc, 4), "acc": round(it_acc, 4),
+                             "ridge_r2": round(r2, 4)},
+           "control_auroc": round(ctrl_auc, 4), "selectivity": selectivity(it_auc, ctrl_auc)}
+    return {"layer": layer, "position": position, "l_idx": l_idx, "p_idx": p_idx,
+            "rec": rec, "va_proba": va_proba, "it_proba": it_proba, "probe": probe}
+
+
+# --------------------------------------------------------------------------------------
 # Driver
 # --------------------------------------------------------------------------------------
 def run(cfg, args):
@@ -322,47 +362,34 @@ def run(cfg, args):
     print(f"    baselines: {baselines.get('tfidf')}")
 
     # ---- the (layer, position) sweep ----
-    rng = np.random.default_rng(cfg["seed"])
+    # Independent (layer, position) cells run in parallel, one BLAS thread each.
+    import os
+    from joblib import Parallel, delayed
+    acts_path = str(Path(act_dir) / "acts_all.npy")
+    n_jobs = args.n_jobs if args.n_jobs else max(1, (os.cpu_count() or 4) - 2)
+    tier_et, tier_it = tier[idx["explicit_test"]], tier[idx["implicit_test"]]
+    score_it = score[idx["implicit_test"]]
+    cells = [(positions_all.index(p), p, l) for p in positions for l in layers]
+    print(f"    {len(cells)} cells across n_jobs={n_jobs} ...", flush=True)
+    results = Parallel(n_jobs=n_jobs, verbose=10)(
+        delayed(_sweep_cell)(acts_path, cfg_layers.index(l), p_idx, l, p,
+                             fractional_depth(l, n_layers_model), idx, ytr, yva, str_tr,
+                             tier_et, tier_it, score_it, n_layers_model,
+                             cfg["seed"] + 1000 * p_idx + l)
+        for p_idx, p, l in cells)
+
     sweep = {p: {} for p in positions}
     proba_store = {}            # (layer, position) -> {'val','imp'} for the ensemble
     best = {"implicit_auroc": -1.0}
-    n_cells = len(positions) * len(layers)
-    cell = 0
-    for p in positions:
-        p_idx = positions_all.index(p)
-        for l in layers:
-            cell += 1
-            l_idx = cfg_layers.index(l)
-            plane = load_plane(acts, l_idx, p_idx)
-            Xtr, Xva = plane[idx["train"]], plane[idx["val"]]
-            Xet, Xit = plane[idx["explicit_test"]], plane[idx["implicit_test"]]
-            probe = fit_logistic(Xtr, ytr, Xva, yva, seed=cfg["seed"])
-            et_auc, et_acc, _ = eval_probe(probe, Xet, tier[idx["explicit_test"]])
-            it_auc, it_acc, it_proba = eval_probe(probe, Xit, tier[idx["implicit_test"]])
-            _, _, va_proba = eval_probe(probe, Xva, yva)
-            # shuffled-label control (selectivity): shuffle BOTH train and val labels so the
-            # fit can't peek at the real signal; fixed C (no grid -- a control needs no tuning,
-            # and tuning it on real val is exactly the leak we fixed earlier). Score on real test.
-            ctrl = fit_logistic(Xtr, ytr[rng.permutation(len(ytr))],
-                                Xva, yva[rng.permutation(len(yva))], Cs=(0.1,), seed=cfg["seed"])
-            ctrl_auc, _, _ = eval_probe(ctrl, Xit, tier[idx["implicit_test"]])
-            r2 = ridge_r2(Xtr, str_tr, Xit, score[idx["implicit_test"]], seed=cfg["seed"])
-            rec = {"frac_depth": fractional_depth(l, n_layers_model),
-                   "explicit_test": {"auroc": round(et_auc, 4), "acc": round(et_acc, 4)},
-                   "implicit_test": {"auroc": round(it_auc, 4), "acc": round(it_acc, 4),
-                                     "ridge_r2": round(r2, 4)},
-                   "control_auroc": round(ctrl_auc, 4),
-                   "selectivity": selectivity(it_auc, ctrl_auc)}
-            sweep[p][l] = rec
-            proba_store[(l, p)] = {"val": va_proba, "imp": it_proba}
-            if it_auc > best["implicit_auroc"]:
-                best = {"position": p, "layer": l, "l_idx": l_idx, "p_idx": p_idx,
-                        "frac_depth": rec["frac_depth"], "implicit_auroc": round(it_auc, 4),
-                        "ridge_r2": round(r2, 4), "probe": probe,
-                        "ridge_coef": None}
-            print(f"    [{cell:>3}/{n_cells}] {p:<12} L{l:<2} "
-                  f"implicit AUROC={it_auc:.4f} (best L{best['layer']}={best['implicit_auroc']:.4f})",
-                  flush=True)
+    for r in results:
+        sweep[r["position"]][r["layer"]] = r["rec"]
+        proba_store[(r["layer"], r["position"])] = {"val": r["va_proba"], "imp": r["it_proba"]}
+        it_auc = r["rec"]["implicit_test"]["auroc"]
+        if it_auc > best["implicit_auroc"]:
+            best = {"position": r["position"], "layer": r["layer"], "l_idx": r["l_idx"],
+                    "p_idx": r["p_idx"], "frac_depth": r["rec"]["frac_depth"],
+                    "implicit_auroc": it_auc, "ridge_r2": r["rec"]["implicit_test"]["ridge_r2"],
+                    "probe": r["probe"], "ridge_coef": None}
 
     # ---- headline CI + 5-seed stability at l* ----
     if "layer" not in best:
@@ -469,6 +496,7 @@ def main():
     ap.add_argument("--positions", default=None, help="comma subset of cached positions")
     ap.add_argument("--layers", default=None, help="comma subset of cached layers")
     ap.add_argument("--seeds", type=int, default=5, help="split-seed count for stability at l*")
+    ap.add_argument("--n-jobs", type=int, default=None, help="parallel sweep workers (default: CPUs-2)")
     ap.add_argument("--no-ensemble", action="store_true", help="skip the multi-layer stacking row")
     args = ap.parse_args()
     with open(args.config) as f:
