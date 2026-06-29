@@ -215,7 +215,7 @@ def fit_logistic(Xtr, ytr, Xva, yva, Cs=(0.01, 0.1, 1.0, 10.0), seed=42):
     classes = sorted(set(ytr))
     best, best_auc = None, -1.0
     for C in Cs:
-        clf = LogisticRegression(C=C, max_iter=2000, random_state=seed)
+        clf = LogisticRegression(C=C, max_iter=5000, random_state=seed)
         clf.fit(Xtr_s, ytr)
         auc = macro_ovr_auroc(yva, clf.predict_proba(Xva_s), list(clf.classes_))
         if auc > best_auc:
@@ -236,11 +236,13 @@ def eval_probe(probe, X, y):
 
 def ridge_r2(Xtr, str_tr, Xte, str_te, seed=42):
     """Continuous probe: ridge on risk_score, return R2 on the eval set."""
-    from sklearn.linear_model import Ridge
+    from sklearn.linear_model import RidgeCV
     from sklearn.metrics import r2_score
     from sklearn.preprocessing import StandardScaler
     sc = StandardScaler().fit(Xtr)
-    rg = Ridge(alpha=1.0, random_state=seed).fit(sc.transform(Xtr), str_tr)
+    # RidgeCV picks alpha by efficient LOO; the wide grid keeps the high-dim, collinear
+    # activation features well-conditioned (alpha=1 was ill-conditioned at d~2-3k).
+    rg = RidgeCV(alphas=(1.0, 10.0, 100.0, 1000.0)).fit(sc.transform(Xtr), str_tr)
     return float(r2_score(str_te, rg.predict(sc.transform(Xte))))
 
 
@@ -386,7 +388,7 @@ def run(cfg, args):
         Xv = np.hstack([proba_store[(l, bp)]["val"] for l in ens_layers])
         Xi = np.hstack([proba_store[(l, bp)]["imp"] for l in ens_layers])
         from sklearn.linear_model import LogisticRegression
-        meta_clf = LogisticRegression(max_iter=2000, random_state=cfg["seed"]).fit(Xv, yva)
+        meta_clf = LogisticRegression(max_iter=5000, random_state=cfg["seed"]).fit(Xv, yva)
         ens_auc = macro_ovr_auroc(tier[idx["implicit_test"]], meta_clf.predict_proba(Xi),
                                   list(meta_clf.classes_))
         ensemble = {"position": bp, "n_layers": len(ens_layers),
