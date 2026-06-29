@@ -380,10 +380,12 @@ def run(cfg, args):
 
     sweep = {p: {} for p in positions}
     proba_store = {}            # (layer, position) -> {'val','imp'} for the ensemble
+    probes = {}                 # (layer, position) -> fitted probe (reused for persistence)
     best = {"implicit_auroc": -1.0}
     for r in results:
         sweep[r["position"]][r["layer"]] = r["rec"]
         proba_store[(r["layer"], r["position"])] = {"val": r["va_proba"], "imp": r["it_proba"]}
+        probes[(r["layer"], r["position"])] = r["probe"]
         it_auc = r["rec"]["implicit_test"]["auroc"]
         if it_auc > best["implicit_auroc"]:
             best = {"position": r["position"], "layer": r["layer"], "l_idx": r["l_idx"],
@@ -443,14 +445,15 @@ def run(cfg, args):
     res_dir = Path(cfg["paths"]["results_dir"])
     probe_dir = res_dir / "probes"
     probe_dir.mkdir(parents=True, exist_ok=True)
-    # best overall + the best layer at each position (S10/S11 read at 'decision')
+    # best overall + the best layer at each position (S10/S11 read at 'decision'), reusing the
+    # probes already fit in the sweep -- no refitting.
     probe_to_npz(probe_dir / f"probe_best_L{bl}_{bp}.npz", best["probe"], None, bl, bp, best["frac_depth"])
+    per_position_best = {}
     for p in positions:
         bl_p = max(sweep[p], key=lambda l: sweep[p][l]["implicit_test"]["auroc"])
-        pr = fit_logistic(load_plane(acts, cfg_layers.index(bl_p), positions_all.index(p))[idx["train"]],
-                          ytr, load_plane(acts, cfg_layers.index(bl_p), positions_all.index(p))[idx["val"]],
-                          yva, seed=cfg["seed"])
-        probe_to_npz(probe_dir / f"probe_L{bl_p}_{p}.npz", pr, None, bl_p, p, fractional_depth(bl_p, n_layers_model))
+        per_position_best[p] = {"layer": bl_p, "implicit_auroc": sweep[p][bl_p]["implicit_test"]["auroc"]}
+        probe_to_npz(probe_dir / f"probe_L{bl_p}_{p}.npz", probes[(bl_p, p)], None,
+                     bl_p, p, fractional_depth(bl_p, n_layers_model))
 
     report = {
         "meta": {"model": meta["model"], "num_hidden_layers": n_layers_model,
@@ -459,6 +462,7 @@ def run(cfg, args):
                  "seed": cfg["seed"], "config_sha": config_sha(args.config),
                  "git_commit": git_commit(), "pairs_excluded": PAIRS_EXCLUDED},
         "best": {k: v for k, v in best.items() if k not in ("probe", "l_idx", "p_idx", "ridge_coef")},
+        "per_position_best": per_position_best,
         "seed_stability": stability, "baselines": baselines, "ensemble": ensemble,
         "thresholds": thresholds, "sweep": sweep,
     }
