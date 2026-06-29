@@ -56,8 +56,13 @@ rubric:
     moderate_max: 70       # 40 <= s <= 70 -> moderate; s > 70 -> aggressive
 
 extraction:
-  layers: [20, 25, 31]       # TBD -- sweep mid-to-late residual stream
-  positions: [profile_end, decision]   # probe both; localization is a finding
+  # Sweep ALL layers: capturing every layer is the SAME forward pass (only disk grows),
+  # and the best probe layer is task-/family-specific (lit: ~65% depth on average but range
+  # 15-98%, and representations can be suppressed in the last layers a la TalkTuner). S5
+  # picks l* = argmax implicit-held-out AUROC from the sweep. [20,25,31] (frac depth
+  # 0.48/0.60/0.74) is the expected l* region for the 9B, kept here as a note.
+  layers: all                # all | [int, ...]
+  positions: [profile_end, profile_mean, decision]   # last-token, mean-pool over narrative, decision; probe all -- localization + aggregation are findings
 
 advice_tasks: [portfolio_choice, equity_allocation, margin_approval]
 
