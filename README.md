@@ -7,6 +7,12 @@ Looking inside an LLM financial advisor to audit *Know Your Customer* (suitabili
 
 > Status: direction pending team-sync confirmation (June 2026). Target: ICAIF 2026 (Aug 2).
 
+## Project review
+
+The September 2026 [audit and literature review](AUDIT_AND_LITERATURE_REVIEW.md)
+documents the current pipeline, methodological risks, related research, and revised
+experiment plan.
+
 ## Research questions
 - **RQ1 (Existence):** Does the model hold a linearly-decodable internal estimate of the
   *client's* risk tolerance, even when the client never uses risk words?
